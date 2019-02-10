@@ -1,0 +1,248 @@
+---
+title: "Capston Project: Diamonds"
+date: "February 10, 2019"
+author: "Johannes Le Blanc"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(lattice)
+library(munsell)
+library(ggplot2)
+library(caret)
+library(dplyr)
+library(tidyr)
+library(mlbench)
+library(rpart)
+```
+
+##Introduction
+In this machine learning project, I analyze the diamond data set of the tidyverse package. The data set contains around 54'000 rows and ten variables. The goal is to create a model to predict the price of the diamonds. 
+
+In a first step, I load the data and delete several variables, which are not necessary for the analysis. Furthermore, I create a new variable "price_cat" from the continuous variable "price". Price_cat is a seven-step categorical variable. In a second step, I create the train and test datasets and conduct a first explorative analysis of the data by creating several plots. Subsequently, five different methods are tested on the data. Finally, the best performing method is used with the training and the test-set.
+
+##Analysis
+
+In a first step, I install missing packages and load the data:
+```{r}
+if(!require(lattice)) install.packages("lattice", repos = "http://cran.us.r-project.org")
+if(!require(munsell)) install.packages("munsell", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(tidyr)) install.packages("tidyr", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(mlbench)) install.packages("mlbench", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+
+data("diamonds")
+head(diamonds)
+str(diamonds)
+```
+
+### Clean the dataset
+In this step, I delete unnecessary variables and have a first look at the data. For this analysis, I exclude all variables related to the physical dimensions of the diamonds. This includes the variables x, y, z for length, width and depth, total depth percentage, and table. 
+
+```{r}
+diamonds2 <- diamonds[c(1,2,3,4,7)]
+```
+
+I reduce the dataset of around 50'000 entrys to 10'000:
+
+```{r}
+dataset <- diamonds2[sample(nrow(diamonds), 10000), ]
+```
+
+In this step, I convert the continuous variable price into a categorical variable of seven buckets divided by levels of $3'000:
+
+```{r}
+dataset$price_cat <- cut(dataset$price, 
+                         breaks = c(0, 3000, 6000, 9000, 12000, 15000, 18000, 21000), 
+                         labels = c("A", "B", "C", "D", "E", "F", "G"))
+```
+
+Now I have a first look at the manipulated data:
+```{r}
+head(dataset)
+summary(dataset)
+dim(dataset)
+```
+
+### Create a training and a test-set
+
+I now split the dataset into a training and a test set. The training set contains 90% of the rows, and the test set the remaining 10%:
+```{r}
+test_index <- createDataPartition(dataset$price_cat, p = 0.90, list = FALSE)
+test_set <- dataset[-test_index,]
+train_set <- dataset[test_index,]
+```
+
+Again, I have a quick look at the dimensions of the two new sets I have just created:
+```{r}
+dim(train_set)
+dim(test_set)
+```
+
+### Data exploration
+
+To better understand how many stones are in which price bucket, I create a table which shows the frequencies per price level:
+```{r}
+price_percent <- prop.table(table(train_set$price_cat)) * 100
+cbind(freq = table(train_set$price_cat), price_percent = price_percent)
+```
+
+Now, I create a simple plot of the data:
+```{r}
+plot(train_set$price_cat)
+```
+Bucket "A", which contains stones of up to $3'000 includes the vast majority of diamonds with 57% of all stones in the sample. Only 0.5% of all diamonds in the set are worth over $18'000 (bucket G). The plot visualizes the unequal distribution of stones among the buckets A-G.
+
+### Visually inspect the data
+To get a better understanding of the distribution of the data, I create box-plots. For this, I create two variables, one for the output price and one for the different variables:
+```{r}
+x <- train_set[,1:5]
+y <- train_set[,6]
+
+par(mfrow=c(1,4))
+for(i in 1:4) {
+  boxplot(x[,i], main=names(train_set)[i])
+}
+```
+
+The distribution of the variables differs profoundly. In particular "carat" shows a strong concentration on the lower end with several outliers going up to 4 carats. The variable "cut" in contrast, describing the quality of the cut, shows a strong accumulation at the upper end, the high-quality cuts. The medians of the two variables "color" and "clarity" again are almost located in the middle of the respective scales. The interquartile range between the median and the lower 25% percentile of "color" indicates a non-symmetric distribution with a majority of stones of low-quality color.
+
+In the next step, I want to get a better understanding of the relationship between price, carat, and color. For this, I create a plot of the original data. The colors from dark-blue to yellow show the different qualities of color.
+```{r}
+plot_pcc_c <- dataset %>% ggplot(aes(y = price, x = carat)) +
+  geom_point(aes(color = color), alpha = 1/1)  +
+  theme(legend.position="bottom") 
+plot_pcc_c
+```
+
+
+I want to explore the relationship between the variables carat and price further. For this, I plot carat on the different levels of the price buckets. For this, I now use the variable price_cat:
+
+```{r}
+plot_pcc_cat <- train_set %>% ggplot(aes(y = price_cat, x = carat)) + 
+  geom_point(aes(color = color), position="jitter") +
+  theme(legend.position="bottom") 
+plot_pcc_cat
+```
+
+The plot shows the different price categories on the y-axis.
+
+In the next step, I create a regression tree to show the splits in the price variable:
+
+```{r}
+fit_tree <- rpart(price_cat ~ ., data = train_set)
+plot(fit_tree, margin = 0.1)
+text(fit_tree, cex = 0.75)
+```
+
+The tree shows the seven buckets I have created before. 
+
+### Creating the model
+
+I run several algorithms and compare the outcomes. Before creating the model, I use cross-validation to make sure, our results do not come about by luck and to avoid overtraining. I start with a k = 10 cross-validation:
+```{r}
+control <- trainControl(method = "cv", number = 10)
+metric <- "Accuracy"
+```
+
+To find the best fitting model,I use different linear and non-linear methods to analyze the data. The methods used are:
+
+* Linear Discriminant Analysis (LDA)
+
+* Random Forest (RF)
+
+* Stochastic Gradient Boosting (GBM)
+
+* k-Nearest Neighbors (kNN)
+
+* Support Vector Machines (SVM)
+
+```{r echo=T, results='hide'}
+# LDA
+set.seed(7)
+fit.lda <- train(price_cat~., data = train_set, method = "lda", 
+                 metric = metric, trControl = control)
+# Random Forest
+set.seed(7)
+fit.rf <- train(price_cat~., data = train_set, method = "rf", 
+                metric = metric, trControl = control)
+# GBM
+set.seed(7)
+fit.gbm <- train(price_cat~., data = train_set, method = "gbm", 
+                 metric = metric, trControl = control)
+# kNN
+set.seed(7)
+fit.knn <- train(price_cat~., data = train_set, method = "knn", 
+                 metric = metric, trControl = control)
+# SVM
+set.seed(7)
+fit.svm <- train(price_cat~., data = train_set, method="svmRadial", 
+                 metric = metric, trControl = control)
+```
+
+I compare the accuracy of the outcomes:
+```{r}
+results <- resamples(list(lda = fit.lda, GBM = fit.gbm, kNN = fit.knn, 
+                          svm = fit.svm, rf = fit.rf))
+
+summary(results)
+```
+
+And plot the results:
+```{r}
+bwplot(results)	
+```
+
+As can be seen from the table and the plot, Random Forest, GBM and kNN do best on the diamond data, and all reach a perfect accuracy of 1. Random Forest is still slightly superior to the other two methods, why I proceed with Random Forest. Here is an overview of the results of the fitting:
+```{r}
+print(fit.rf)
+```
+
+##Results
+
+Finally, I test the accuracy of the result of Random Forest with the training set:
+```{r}
+pred.train <- predict(fit.rf, train_set)
+print(confusionMatrix(pred.train, train_set$price_cat))
+```
+Overall accuracy, sensitivity, and specificity reach 1 for all buckets of price_cat. 
+
+And the I test the accuracy of the result of Knn with the test set:
+```{r}
+pred.train <- predict(fit.rf, test_set)
+print(confusionMatrix(pred.train, test_set$price_cat))
+```
+The accuracy of the Random Forest algorithm reaches the level 1 for the test set as well. 
+
+##Conclusion
+In this analysis, I first loaded and restructured the data set and subsequently analyzed the data. In the data exploration section, I created several plots to visualize the distribution of the data. For the modeling section, I used five different methods to find out, which one fits the data best. Random Forest and with identical results, GBM and kNN reached the highest accuracy of all methods. I finally analyzed the accuracy of the three methods when applied to both data sets, the training set, and the test set. Random Forest reached an accuracy of 1 in both sets. Sensitivity and specificity also reached 1 for all seven buckets of the variable price_cat.
+
+Each method used has several variants. In the next step, one could refine the analysis by running the variants of the three winning repeated with all variables of the diamonds dataset to see if any differences occur. Furthermore, one could use more methods on the data.  
+
+## Bibliography
+
+* Analytics Vidhya Content Team (2016): Practicing Machine Learning Techniques in R with MLR Package, URL: https://www.analyticsvidhya.com/blog/2016/08/practicing-machine-learning-techniques-
+in-r-with-mlr-package/
+
+* ggplot2 (n.d.): Prices of 50,000 round cut diamonds, URL: https://ggplot2.tidyverse.org/reference/diamonds.html
+
+* ggplot2 (n.d.): Points, URL: https://ggplot2.tidyverse.org/reference/geom_point.html
+
+* Jason Brownlee (2019): Your First Machine Learning Project in R Step-By-Step, URL: https://machinelearningmastery.com/machine-learning-in-r-step-by-step/
+
+* Joseph Rickert(2014): Comparing machine learning models in R, URL: https://blog.revolutionanalytics.com/2014/09/comparing-models-in-r.html
+
+* Leo Breiman and Adele Cutler (n.d.): Random Forests, URL: https://www.stat.berkeley.edu/~breiman/RandomForests/
+
+* Max Kuhn (2018): The caret Package, URL: https://topepo.github.io/caret/index.html
+
+* Rafael A. Irizarry (2018): Introduction to Data Science: Data Analysis and Prediction Algorithms with R, URL: https://rafalab.github.io/dsbook/
+
+* Robert I. Kabacoff (2017): Tree-Based Models, URL: https://www.statmethods.net/advstats/cart.html
+
+* Sarajit Poddar (2015): Classification of Diamond, URL: https://rpubs.com/sarajitpoddar/diamond_classification
+
+* Sunil Ray (2017): Essentials of Machine Learning Algorithms, URL: https://www.analyticsvidhya.com/blog/2017/09/common-machine-learning-algorithms/  
